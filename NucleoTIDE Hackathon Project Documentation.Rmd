@@ -1,0 +1,246 @@
+---
+title: "Sahand_Adibnia_NucleoTIDE_Hackathon_Project_Documentation"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+The formation of neuromelanin in the brain is a phenomenon that is known to be unique to humans [1]. Animals do not accumulate the pigment. It is observed to form only in certain catecholaminergic neurons, namely the dopaminergic neurons of the substantia nigra pars compacta (SNpc) [2]. Interestingly, neuromelanin is closely linked to Parkinson's disease, as it is these dopaminergic neuromelanin-containing neurons that are exclusively lost in Parkinson's [2].
+
+Currently, it is assumed that neuromelanin formed in dopaminergic neurons is a product of dopamine oxidation, a process not known to be catalyzed by any particular enzymes [3-5]. However, studies in animal models have failed to produce neuromelanin by solely increasing dopamine levels and dopamine oxidation [1]. Additionally, neuromelanin does not form in all catecholaminergic neurons. In fact, the dopaminergic neurons of the ventral tegmental area (VTA) generally lack neuromelanin [2], suggesting that some other molecular mechanism may be involved in neuromelanin formation.
+
+The goal of this project is to use bioinformatics and gene expression data to give some insight into the formation of neuromelanin. Learning more about these molecular pathways may even provide some insight into the mechanisms that cause the selective death of neuromelanin-containing neurons in Parkinson's disease. The primary method by which this is achieved is by analyzing differences in gene expression between the SNpc, a brain region containing a large population of melanized dopaminergic neurons, and the VTA, a brain region containing a large population of non-melanized dopaminergic neurons.
+
+The Allen Human Brain Atlas (https://human.brain-map.org/microarray/search) provides microarray expression data of numerous different brain regions in 6 neurologically and neuropathologically normal individuals, including the SNpc and VTA. It also provides a function that does differential expression analysis of different brain regions, outputting p-values and fold change values for each probe. However, it only outputs the fold change for probes that are upregulated in the target structure with respect to the contrast structure. Therefore, this search had to be done twice: once with the SNpc as the target structure and the VTA as the contrast structure, and another time with the VTA as the target structure and the SNpc as the contrast structure. This data could be directly downloaded from the site. However, it could only be downloaded 2000 probes at a time. This was rather tedious, and knowing that many probes are not significantly differentially expressed anyway, only the first 10000 probes with the highest fold change were downloaded, giving a total of 20000 probes.
+
+
+READING IN P-VALUES AND FOLD CHANGE OF TOP 10000 DIFERENTIALLY EXPRESSED PROBES
+```{r}
+library(readr)
+library(dplyr)
+
+
+# SNpc target, VTA contrast
+files_1 <- list.files(path = "/Users/rezaadibnia/Desktop/PD NM Project/mDBR - VTA vs SNpc/SNpc target, VTA contrast/", pattern = "Probes_.*csv", full.names = TRUE, ignore.case = FALSE)
+SNt_VTAc_probe_list <- lapply(files_1, read_csv)
+SNt_VTAc_probes <- data.frame(bind_rows(SNt_VTAc_probe_list))
+
+# VTA target, SNpc contrast
+files_2 <- list.files(path = "/Users/rezaadibnia/Desktop/PD NM Project/mDBR - VTA vs SNpc/VTA target, SNpc contrast/", pattern = "Probes_.*csv", full.names = TRUE, ignore.case = FALSE)
+VTAt_SNc_probe_list <- lapply(files_2, read_csv)
+VTAt_SNc_probes <- data.frame(bind_rows(VTAt_SNc_probe_list))
+
+```
+
+
+CORRECTING P-VALUES AND TRANSFORMING FOLD CHANGES
+The definition of the fold change of B with respect to A is B/A. Therefore, the fold change of A with respect to B is A/B. In other words, the fold change of gene expression in the SNpc with respect to the VTA is equal to 1/(the fold change of gene expression in the VTA with respect to the SNpc). By taking the reciprocal of the fold change values with VTA target and SNpc contrast, we get the equivalent fold change for SNpc target and VTA contrast, allowing us to combine the differential expression analysis of all 20000 probes into one data frame.
+```{r}
+
+# BH-correcting p-values (Benjamini-Hochberg Procedure)
+SNt_VTAc_probes$p <- p.adjust(SNt_VTAc_probes$p, method="BH")
+VTAt_SNc_probes$p <- p.adjust(VTAt_SNc_probes$p, method="BH")
+
+# Converting VTA target, SNpc contrast fold change to SNpc target, VTA contrast fold change
+VTAt_SNc_probes$fold.change <- 1/(VTAt_SNc_probes$fold.change)
+
+# Combining the data frames containing p values and fold change
+p_and_FC <- data.frame(bind_rows(SNt_VTAc_probes, VTAt_SNc_probes))
+p_and_FC <- p_and_FC[,c(4,10:11)]
+
+
+```
+
+
+VISUALIZING DIFFERENTIALLY EXPRESSED PROBES - VOLCANO PLOT
+```{r}
+library(ggplot2)
+
+# Vertical lines for log2(fold change) thresholds, horizontal line for the p-value threshold
+# Top 10% of upregulated probes and bottom 10% of downregulated probes are chosen
+horz_min = quantile(log2(VTAt_SNc_probes$fold.change), 0.10)
+horz_max = quantile(log2(SNt_VTAc_probes$fold.change), 0.90)
+
+# Add a column to p_and_FC data frame indicating whether probe is upregulated, downregulated, or not significant
+p_and_FC$differentially_expressed <- "Not Significant"
+# If log2Foldchange > horz_max and pvalue < 0.05, set as "UP" 
+p_and_FC$differentially_expressed[log2(p_and_FC$fold.change) > horz_max & p_and_FC$p < 0.05] <- "Upregulated"
+# If log2Foldchange < horz_min and pvalue < 0.05, set as "DOWN"
+p_and_FC$differentially_expressed[log2(p_and_FC$fold.change) < horz_min & p_and_FC$p < 0.05] <- "Downregulated"
+
+# Construct volcano plot
+volcano_plot <- ggplot(data=p_and_FC, aes(x=log2(fold.change), y=-log10(p), col=differentially_expressed)) + 
+  geom_point() + 
+  theme_minimal() +
+  geom_vline(xintercept=c(horz_min, horz_max), col="black") +
+  geom_hline(yintercept=-log10(0.05), col="black")
+
+# The significantly differentially expressed probes are  found in the upper-left and upper-right corners of the volcano plot
+volcano_plot
+
+```
+
+FILTERING FOR P < 0.05 and FC > 90th PERCENTILE (TOP 10%)
+p-values were previously corrected when constructing the volcano plot
+```{r}
+library(dplyr)
+
+# Filters for top 10% of genes with highest FC compared to all probes, not just significantly differentially expressed prboes VTA target, SNpc contrast is filtered for fold changes less than the 10th percentile because fold change are all less than 1. The lowest 10% of fold change values indicate the top 10% of probes that are the most downregulated in the SNpc compared to the VTA.
+
+# SNpc target, VTA contrast
+SNt_VTAc_probes <- SNt_VTAc_probes %>% filter(SNt_VTAc_probes$p < 0.05 & SNt_VTAc_probes$fold.change > quantile(SNt_VTAc_probes$fold.change, 0.90))
+
+# VTA target, SNpc contrast
+VTAt_SNc_probes <- VTAt_SNc_probes %>% filter(VTAt_SNc_probes$p < 0.05 & VTAt_SNc_probes$fold.change < quantile(VTAt_SNc_probes$fold.change, 0.10))
+
+```
+
+
+READING IN EXPRESSION DATA FOR TOP 10000 DIFFERENTIALLY EXPRESSED PROBES
+This data is actually not necessary to overall analysis, but is good to have for reference.
+```{r}
+library(readr)
+library(dplyr)
+
+read_csv_labeled_header <- function(file) {
+  labels = c("Probe_IDs", "SN_1", "SN_2", "SN_3", "SN_4", "SN_5", "SN_6", "VTA_1", "VTA_2", "VTA_3", "VTA_4", "VTA_5", "VTA_6")
+  read_csv(file, col_names = labels)
+}
+
+# SNpc target, VTA contrast
+files_expr_1 <- list.files(path = "/Users/rezaadibnia/Desktop/PD NM Project/mDBR - VTA vs SNpc/SNpc target, VTA contrast/", pattern = "Expression_.*csv", full.names = TRUE, ignore.case = FALSE)
+SNt_VTAc_expr_list <- lapply(files_expr_1, read_csv_labeled_header)
+SNt_VTAc_expr <- data.frame(bind_rows(SNt_VTAc_expr_list))
+
+# VTA target, SNpc contrast
+files_expr_2 <- list.files(path = "/Users/rezaadibnia/Desktop/PD NM Project/mDBR - VTA vs SNpc/VTA target, SNpc contrast/", pattern = "Expression_.*csv", full.names = TRUE, ignore.case = FALSE)
+VTAt_SNc_expr_list <- lapply(files_expr_2, read_csv_labeled_header)
+VTAt_SNc_expr <- data.frame(bind_rows(VTAt_SNc_expr_list))
+
+```
+
+
+JOINING EXPRESSION AND PROBE DATA FRAMES INTO ONE
+Note that probe data frames contain p-values and fold changes.
+```{r}
+library(dplyr)
+
+SNt_VTAc_expr <- SNt_VTAc_expr %>% inner_join(SNt_VTAc_probes, by = c("Probe_IDs" = "id"))
+VTAt_SNc_expr <- VTAt_SNc_expr %>% inner_join(VTAt_SNc_probes, by = c("Probe_IDs" = "id"))
+
+expr <- data.frame(bind_rows(SNt_VTAc_expr, VTAt_SNc_expr))
+
+```
+
+After filtering for probes that had p-values < 0.05 and significant fold changes, the probes needed to be aligned to individual genes. To do this, the expression data for all probes in all brain regions in all 6 donors had to be downloaded from Allen Human Brain Atlas (AHBA). The probes lacking Entrez IDs were first filtered out. Conveniently, AHBA provides a presence/absence flag that determines whether a certain probe's expression is well above the background levels or not. This flag was used to filter out any probes that are not expressed above the background in less than 1% of all samples.
+There may be multiple probes that align to the same gene, but only one probe per gene can be selected. Therefore, a systematic method was used to align probes to genes using the collapseRows function from the WGCNA package, similar to methods previously used in the literature [6]:
+
+  - If there is only one probe for a gene, that one is chosen
+  - If there are two probes for one gene, the one with the max variance across all samples is chosen (method = maxRowVariance)
+  - If there more than two probes for one gene, the probe with the highest connectivity (summed adjacency) is chosen (connectivityBasedCollapsing = TRUE)
+
+ALIGNING PROBES TO GENES
+```{r}
+# Map probes to genes
+# First download 'Complete normalized microarray datasets' for all six donors from http://human.brain-map.org/static/download
+# Store the downloaded files in a AHBA download directory
+library(WGCNA)
+
+########## Load data ##########
+
+# Set donor names
+donorNames <- c("donor9861", "donor10021", "donor12876", "donor14380", "donor15496", "donor15697")
+names(donorNames) <- donorNames
+
+# Location of AHBA directories
+ahba_download <- "/Users/rezaadibnia/Desktop/AHBA Full Data/Microarray" # Where downloaded files are stored
+
+# Read in probe info (files are the same for each donor)
+probeInfo <- read.csv(paste0(ahba_download, "/normalized_microarray_donor9861/Probes.csv")) # Same for each donor
+
+# Read expression data for each donor (probes x samples)
+brainExpr <- lapply(donorNames, function(d){
+  file1 <- paste0(ahba_download, "/normalized_microarray_", d, "/MicroarrayExpression.csv")
+  e <- read.csv(file1, header = FALSE)
+  rownames(e) <- e[,1]
+  e <- e[,-1]
+  file2 <- paste0(ahba_download, "/normalized_microarray_", d, "/SampleAnnot.csv")
+  sample_annotation <- read.csv(file2)
+  colnames(e) <- sample_annotation$structure_id
+  e
+})
+
+########## Filter probes based on concatenated expression data from all donors ##########
+
+# Probes with missing Entrez IDs
+probes_missing_entrezID <- is.na(probeInfo$entrez_id) # same in all donors
+print(paste(sum(probes_missing_entrezID), "probes with missing entrez IDs"))
+
+# Probes with expression well above background in at least 1% of samples in all donors
+pa_call <- lapply(donorNames, function(d){
+  file <- paste0(ahba_download, "/normalized_microarray_", d, "/PACall.csv")  
+  pa <- read.csv(file, header = FALSE)
+  rownames(pa) <- pa[,1]
+  pa[,-1]
+})
+pa_concat <- Reduce(cbind, pa_call)
+sum <- rowSums(pa_concat)
+low_presence <- sum < 0.01*ncol(pa_concat)
+print(paste(sum(low_presence), "probes present in <1% of samples"))
+
+# Concatenate data across all donors and filter probes by ID
+expr_concat <- Reduce(cbind, brainExpr)
+expr_concat <- expr_concat[!(probes_missing_entrezID | low_presence),]
+probeInfo <- probeInfo[!(probes_missing_entrezID | low_presence), ]
+
+probe2gene <- collapseRows(expr_concat, 
+                           rowGroup = probeInfo$entrez_id, 
+                           rowID = probeInfo$probe_id,
+                           method = "maxRowVariance",
+                           connectivityBasedCollapsing = TRUE
+                           )
+selected_probes <- probe2gene$selectedRow
+entrez_id <- probeInfo$entrez_id[selected_probes]
+entrez_order <- order(entrez_id)
+
+probeInfo <- probeInfo[selected_probes, ]
+probeInfo <- probeInfo[entrez_order,]
+
+```
+
+
+ALIGNING SIGNIFICANTLY DIFFERENTIALLY EXPRESSED PROBES TO GENES
+```{r}
+library(dplyr)
+
+# Combine data frames by probe ID to filter out all probes not corresponding to a gene
+final_expr <- expr %>% inner_join(probeInfo, by = c("Probe_IDs" = "probe_id"))
+
+# Remove unnecessary and repeated columns
+final_expr <- final_expr[,-c(14, 18:21, 24:29)]
+final_expr$fold.change <- sort(final_expr$fold.change, decreasing = TRUE)
+
+final_expr[,c(15, 17:18)]
+
+```
+
+
+Among the 696 genes found to be significantly upregulated or downregulated in the SNpc relative to the VTA were genes linked to dopamine, including dopamine receptor 2 (DRD2, BH-corrected p = 1.095541e-04, FC = 3.341), dopamine receptor 5 (DRD5, BH-corrected p = 1.169231e-06, FC = 0.2442002), dopamine active transporter (SLC6A3, BH-corrected p = 8.355197e-03, FC = 4.784) and vesicular monoamine transporter (SLC18A2, BH-corrected p = 0.01238258, FC = 4.656). The SLC18A2 gene codes for the VMAT2 enzyme, which transports dopamine into monoaminergic vesicles to prevent it from oxidizing [1]. VMAT2 activity has been shown to be inversely proportional to neuromelanin levels, so one may assume that higher SLC18A2 expression would contribute to less neuromelanin. However, the opposite case is evident here. With fold change = 4.656, SLC18A2 is actually upregulated in the SNpc, which contains neuromelanin, with respect to the VTA, which does not. This suggests that there may be more at play in neuromelanin formation than just the action of VMAT2.
+
+Ideally, further analysis should be done on these 696 genes to determine which molecular pathways they are involved in. This includes gene set enrichment analysis and assigning gene ontology terms to groups of these genes. Due to time limitations, this could not be accomplished within the hackathon.
+
+
+
+REFERENCES
+
+[1] M. Vila, “Neuromelanin, aging, and neuronal vulnerability in Parkinson’s disease,” Mov. Disord., vol. 34, no. 10, pp. 1440–1451, 2019, doi: 10.1002/mds.27776.
+
+[2] A. Kouli, K. M. Torsney, and W. Kuan, “Parkinson’s Disease: Etiology, Neuropathology, and Pathogenesis,” pp. 3–26, 2018, doi: https://doi.org/10.15586/codonpublications.parkinsonsdisease.2018.ch1.
+
+[3] J. Segura-Aguilar and I. Paris, “Handbook of neurotoxicity,” Handb. Neurotox., vol. 1–3, pp. 1–2371, 2014, doi: 10.1007/978-1-4614-5836-4.
+
+[4] P. Muñoz, S. Huenchuguala, I. Paris, and J. Segura-Aguilar, “Dopamine oxidation and autophagy,” Parkinsons. Dis., vol. 2012, 2012, doi: 10.1155/2012/920953.
+
+[5] A. Herrera, P. Muñoz, H. W. M. Steinbusch, and J. Segura-Aguilar, “Are Dopamine Oxidation Metabolites Involved in the Loss of Dopaminergic Neurons in the Nigrostriatal System in Parkinson’s Disease?,” ACS Chem. Neurosci., vol. 8, no. 4, pp. 702–711, 2017, doi: 10.1021/acschemneuro.7b00034.
+
+[6] A. Keo et al., “Transcriptomic signatures of brain regional vulnerability to Parkinson’s disease,” Commun. Biol., vol. 3, no. 1, pp. 1–12, 2020, doi: 10.1038/s42003-020-0804-9.
